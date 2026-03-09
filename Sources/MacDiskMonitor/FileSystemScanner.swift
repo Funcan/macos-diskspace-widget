@@ -151,6 +151,11 @@ final class FileSystemScanner {
             addBytes(batchResult.bytes, to: task.targetNode)
         }
 
+        if task.depth == 0, task.url.path == "/" {
+            processInitialTopLevelDirectories(childDirectories, rootTask: task)
+            return
+        }
+
         if task.representedNode != nil {
             pushTask(
                 ScanTask(
@@ -163,8 +168,8 @@ final class FileSystemScanner {
             )
         }
 
-        // Push in reverse lexical order so pop() gives depth-first lexical traversal.
-        for childDirectory in childDirectories.sorted(by: { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedDescending }) {
+        // Push in reverse traversal order so pop() gives depth-first traversal.
+        for childDirectory in orderedChildDirectories(for: task, from: childDirectories).reversed() {
             let childDepth = task.depth + 1
             if childDepth <= maxTrackedDepth {
                 let childNode = task.targetNode.childNode(named: childDirectory.lastPathComponent)
@@ -190,6 +195,58 @@ final class FileSystemScanner {
                 )
             }
         }
+    }
+
+    private func processInitialTopLevelDirectories(_ childDirectories: [URL], rootTask: ScanTask) {
+        if rootTask.representedNode != nil {
+            pushTask(
+                ScanTask(
+                    kind: .finalize,
+                    url: rootTask.url,
+                    targetNode: rootTask.targetNode,
+                    representedNode: rootTask.representedNode,
+                    depth: rootTask.depth
+                )
+            )
+        }
+
+        let ordered = orderedChildDirectories(for: rootTask, from: childDirectories)
+        let childTasks: [ScanTask] = ordered.map { childDirectory in
+            let childNode = rootTask.targetNode.childNode(named: childDirectory.lastPathComponent)
+            return ScanTask(
+                kind: .scan,
+                url: childDirectory,
+                targetNode: childNode,
+                representedNode: childNode,
+                depth: 1
+            )
+        }
+
+        guard !childTasks.isEmpty else { return }
+
+        // Prioritize /Users, then fan out one thread per remaining top-level directory.
+        processTask(childTasks[0])
+        let remaining = Array(childTasks.dropFirst())
+        if !remaining.isEmpty {
+            DispatchQueue.concurrentPerform(iterations: remaining.count) { index in
+                processTask(remaining[index])
+            }
+        }
+    }
+
+    private func orderedChildDirectories(for task: ScanTask, from directories: [URL]) -> [URL] {
+        let sorted = directories.sorted {
+            $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+        }
+
+        // Prioritize /Users early in the root traversal so user data appears quickly.
+        if task.depth == 0, task.url.path == "/" {
+            let users = sorted.filter { $0.lastPathComponent == "Users" }
+            let others = sorted.filter { $0.lastPathComponent != "Users" }
+            return users + others
+        }
+
+        return sorted
     }
 
     private func processFiles(_ filePaths: [String]) -> BatchResult {
