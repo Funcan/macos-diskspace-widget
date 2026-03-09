@@ -2,23 +2,10 @@ import AppKit
 import Foundation
 
 final class AnalysisViewController: NSViewController {
-    private let canvasView = NSView()
+    private let canvasView = FilesystemIcicleView()
     private let statusLabel = NSTextField(labelWithString: "Ready to scan")
     private let toggleButton = NSButton(title: "Start", target: nil, action: nil)
-    private let scanQueue = DispatchQueue(label: "MacDiskMonitor.AnalysisScan", qos: .utility)
-    private let scanStateLock = NSLock()
-    private let statWorkerCount = 8
-    private let statBatchSize = 256
-    private var scanRequested = false
-    private var scanWorkerActive = false
-    private var scanEnumerator: FileManager.DirectoryEnumerator?
-    private var scannedFiles: Int = 0
-    private var scannedBytes: UInt64 = 0
-    private var scanActiveStartDate: Date?
-    private var accumulatedScanDuration: TimeInterval = 0
-    private var displayedFilesPerSecond: Int = 0
-    private var lastRateSampleDate: Date?
-    private var lastRateSampleFileCount: Int = 0
+    private let scanner = FileSystemScanner()
     private var isRunning = false {
         didSet {
             toggleButton.title = isRunning ? "Pause" : "Start"
@@ -28,12 +15,11 @@ final class AnalysisViewController: NSViewController {
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 680))
 
-        // Placeholder drawing surface for the interactive results viewer.
         canvasView.wantsLayer = true
-        canvasView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         canvasView.layer?.borderColor = NSColor.separatorColor.cgColor
         canvasView.layer?.borderWidth = 1
         canvasView.translatesAutoresizingMaskIntoConstraints = false
+        canvasView.rootNodes = demoIcicleData()
 
         statusLabel.alignment = .center
         statusLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
@@ -65,6 +51,18 @@ final class AnalysisViewController: NSViewController {
             toggleButton.widthAnchor.constraint(equalToConstant: 140),
             toggleButton.heightAnchor.constraint(equalToConstant: 36),
         ])
+
+        scanner.onProgress = { [weak self] snapshot in
+            self?.statusLabel.stringValue = self?.makeStatus(prefix: "Scanning", snapshot: snapshot) ?? ""
+        }
+        scanner.onPaused = { [weak self] snapshot in
+            self?.statusLabel.stringValue = self?.makeStatus(prefix: "Paused", snapshot: snapshot) ?? ""
+        }
+        scanner.onCompleted = { [weak self] snapshot in
+            guard let self else { return }
+            isRunning = false
+            statusLabel.stringValue = makeStatus(prefix: "Scan complete", snapshot: snapshot)
+        }
     }
 
     @objc private func toggleAnalysis() {
@@ -76,223 +74,16 @@ final class AnalysisViewController: NSViewController {
         isRunning.toggle()
 
         if isRunning {
-            markScanResumed()
-            statusLabel.stringValue = makeStatus(prefix: "Scanning")
-            startOrResumeScan()
+            scanner.startOrResume()
+            let snapshot = scanner.currentSnapshot()
+            statusLabel.stringValue = makeStatus(prefix: "Scanning", snapshot: snapshot)
         } else {
-            markScanPaused()
-            pauseScan()
+            scanner.pause()
         }
     }
 
-    private func startOrResumeScan() {
-        setScanRequested(true)
-
-        let shouldStartWorker: Bool = scanStateLock.withLock {
-            if scanWorkerActive {
-                return false
-            }
-            scanWorkerActive = true
-            return true
-        }
-
-        guard shouldStartWorker else { return }
-
-        scanQueue.async { [weak self] in
-            self?.scanLoop()
-        }
-    }
-
-    private func pauseScan() {
-        setScanRequested(false)
-    }
-
-    private func scanLoop() {
-        let fileManager = FileManager.default
-
-        if scanEnumerator == nil {
-            scanEnumerator = fileManager.enumerator(atPath: "/")
-            scannedFiles = 0
-            scannedBytes = 0
-            resetScanTiming()
-            markScanResumed()
-        }
-
-        var processedSinceUpdate = 0
-
-        while isScanRequested() {
-            guard let firstEntry = scanEnumerator?.nextObject() as? String else {
-                scanEnumerator = nil
-                setScanRequested(false)
-                setScanWorkerActive(false)
-                markScanPaused()
-
-                let summary = makeStatus(prefix: "Scan complete")
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    isRunning = false
-                    statusLabel.stringValue = summary
-                }
-                return
-            }
-
-            var batch: [String] = [firstEntry]
-            while isScanRequested(), batch.count < statBatchSize {
-                guard let nextEntry = scanEnumerator?.nextObject() as? String else {
-                    break
-                }
-                batch.append(nextEntry)
-            }
-
-            let (batchFiles, batchBytes) = processBatch(batch)
-            scannedFiles += batchFiles
-            scannedBytes += batchBytes
-
-            processedSinceUpdate += batch.count
-            if processedSinceUpdate >= 500 {
-                processedSinceUpdate = 0
-                let progress = makeStatus(prefix: "Scanning")
-                DispatchQueue.main.async { [weak self] in
-                    self?.statusLabel.stringValue = progress
-                }
-            }
-        }
-
-        setScanWorkerActive(false)
-        let paused = makeStatus(prefix: "Paused", forceZeroRate: true)
-        DispatchQueue.main.async { [weak self] in
-            self?.statusLabel.stringValue = paused
-        }
-    }
-
-    private func processBatch(_ entries: [String]) -> (files: Int, bytes: UInt64) {
-        let workers = min(statWorkerCount, max(1, entries.count))
-        var fileCounts = Array(repeating: 0, count: workers)
-        var byteCounts = Array(repeating: UInt64(0), count: workers)
-
-        DispatchQueue.concurrentPerform(iterations: workers) { worker in
-            let fileManager = FileManager()
-            var localFiles = 0
-            var localBytes: UInt64 = 0
-            var index = worker
-
-            while index < entries.count {
-                let fullPath = "/\(entries[index])"
-                do {
-                    let attributes = try fileManager.attributesOfItem(atPath: fullPath)
-                    if
-                        let type = attributes[.type] as? FileAttributeType,
-                        type == .typeRegular,
-                        let size = attributes[.size] as? NSNumber
-                    {
-                        localFiles += 1
-                        localBytes += size.uint64Value
-                    }
-                } catch {
-                    // Best-effort scan: skip paths we cannot stat.
-                }
-
-                index += workers
-            }
-
-            fileCounts[worker] = localFiles
-            byteCounts[worker] = localBytes
-        }
-
-        let totalFiles = fileCounts.reduce(0, +)
-        let totalBytes = byteCounts.reduce(0, +)
-        return (totalFiles, totalBytes)
-    }
-
-    private func isScanRequested() -> Bool {
-        scanStateLock.withLock { scanRequested }
-    }
-
-    private func setScanRequested(_ requested: Bool) {
-        scanStateLock.withLock {
-            scanRequested = requested
-        }
-    }
-
-    private func setScanWorkerActive(_ active: Bool) {
-        scanStateLock.withLock {
-            scanWorkerActive = active
-        }
-    }
-
-    private func resetScanTiming() {
-        scanStateLock.withLock {
-            scanActiveStartDate = nil
-            accumulatedScanDuration = 0
-            displayedFilesPerSecond = 0
-            lastRateSampleDate = nil
-            lastRateSampleFileCount = scannedFiles
-        }
-    }
-
-    private func markScanResumed() {
-        scanStateLock.withLock {
-            if scanActiveStartDate == nil {
-                scanActiveStartDate = Date()
-            }
-            lastRateSampleDate = Date()
-            lastRateSampleFileCount = scannedFiles
-        }
-    }
-
-    private func markScanPaused() {
-        scanStateLock.withLock {
-            guard let startDate = scanActiveStartDate else { return }
-            accumulatedScanDuration += Date().timeIntervalSince(startDate)
-            scanActiveStartDate = nil
-            displayedFilesPerSecond = 0
-            lastRateSampleDate = nil
-            lastRateSampleFileCount = scannedFiles
-        }
-    }
-
-    private func elapsedScanDuration() -> TimeInterval {
-        scanStateLock.withLock {
-            let runningDuration: TimeInterval = if let startDate = scanActiveStartDate {
-                Date().timeIntervalSince(startDate)
-            } else {
-                0
-            }
-            return accumulatedScanDuration + runningDuration
-        }
-    }
-
-    private func makeStatus(prefix: String, forceZeroRate: Bool = false) -> String {
-        let elapsed = elapsedScanDuration()
-        let rate = sampledFilesPerSecond(forceZero: forceZeroRate)
-        return "\(prefix): \(scannedFiles) files, \(formatBytes(scannedBytes)) | \(formatDuration(elapsed)) | \(rate) files/s"
-    }
-
-    private func sampledFilesPerSecond(forceZero: Bool) -> Int {
-        scanStateLock.withLock {
-            if forceZero {
-                displayedFilesPerSecond = 0
-                return 0
-            }
-
-            let now = Date()
-            if let lastSampleDate = lastRateSampleDate {
-                let delta = now.timeIntervalSince(lastSampleDate)
-                if delta >= 1 {
-                    let fileDelta = scannedFiles - lastRateSampleFileCount
-                    let sampledRate = delta > 0 ? Double(fileDelta) / delta : 0
-                    displayedFilesPerSecond = max(0, Int(sampledRate.rounded()))
-                    lastRateSampleDate = now
-                    lastRateSampleFileCount = scannedFiles
-                }
-            } else {
-                lastRateSampleDate = now
-                lastRateSampleFileCount = scannedFiles
-                displayedFilesPerSecond = 0
-            }
-
-            return displayedFilesPerSecond
-        }
+    private func makeStatus(prefix: String, snapshot: ScanSnapshot) -> String {
+        "\(prefix): \(snapshot.files) files, \(formatBytes(snapshot.bytes)) | \(formatDuration(snapshot.elapsed)) | \(snapshot.filesPerSecond) files/s"
     }
 
     private func formatDuration(_ interval: TimeInterval) -> String {
@@ -355,13 +146,41 @@ final class AnalysisViewController: NSViewController {
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
-}
 
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return body()
+    private func demoIcicleData() -> [IcicleNode] {
+        let oneMB: UInt64 = 1_048_576
+
+        return [
+            IcicleNode(
+                name: "foo",
+                path: "/foo",
+                size: 2 * oneMB,
+                children: [
+                    IcicleNode(name: "a", path: "/foo/a", size: oneMB, children: []),
+                    IcicleNode(name: "b", path: "/foo/b", size: oneMB, children: []),
+                ]
+            ),
+            IcicleNode(
+                name: "bar",
+                path: "/bar",
+                size: 2 * oneMB,
+                children: [
+                    IcicleNode(name: "c", path: "/bar/c", size: oneMB, children: []),
+                    IcicleNode(name: "d", path: "/bar/d", size: oneMB, children: []),
+                ]
+            ),
+            IcicleNode(
+                name: "baz",
+                path: "/baz",
+                size: 4 * oneMB,
+                children: [
+                    IcicleNode(name: "e", path: "/baz/e", size: oneMB, children: []),
+                    IcicleNode(name: "f", path: "/baz/f", size: oneMB, children: []),
+                    IcicleNode(name: "g", path: "/baz/g", size: oneMB, children: []),
+                    IcicleNode(name: "h", path: "/baz/h", size: oneMB, children: []),
+                ]
+            ),
+        ]
     }
 }
 
