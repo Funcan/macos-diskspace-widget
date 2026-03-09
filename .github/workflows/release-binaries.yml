@@ -1,0 +1,66 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag format
+        shell: bash
+        run: |
+          semver_regex='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          if [[ ! "${GITHUB_REF_NAME}" =~ ${semver_regex} ]]; then
+            echo "Tag must match SemVer with v prefix (e.g. v1.2.3, v1.2.3-rc.1, v1.2.3+build.7). Got: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+      - name: Build arm64 binary
+        shell: bash
+        run: |
+          swift build -c release --arch arm64
+          ARM64_BIN="$(find .build -type f -path '*/release/MacDiskMonitor' | grep 'arm64-apple-macosx' | head -n 1)"
+          if [[ -z "${ARM64_BIN}" ]]; then
+            echo "arm64 binary not found"
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${ARM64_BIN}" dist/MacDiskMonitor-darwin-arm64
+
+      - name: Build amd64 binary
+        shell: bash
+        run: |
+          swift build -c release --arch x86_64
+          AMD64_BIN="$(find .build -type f -path '*/release/MacDiskMonitor' | grep 'x86_64-apple-macosx' | head -n 1)"
+          if [[ -z "${AMD64_BIN}" ]]; then
+            echo "amd64 binary not found"
+            exit 1
+          fi
+          cp "${AMD64_BIN}" dist/MacDiskMonitor-darwin-amd64
+
+      - name: Create universal (fat) binary
+        shell: bash
+        run: |
+          lipo -create \
+            dist/MacDiskMonitor-darwin-arm64 \
+            dist/MacDiskMonitor-darwin-amd64 \
+            -output dist/MacDiskMonitor-darwin-universal
+          chmod +x dist/MacDiskMonitor-darwin-arm64 dist/MacDiskMonitor-darwin-amd64 dist/MacDiskMonitor-darwin-universal
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/MacDiskMonitor-darwin-amd64
+            dist/MacDiskMonitor-darwin-arm64
+            dist/MacDiskMonitor-darwin-universal
