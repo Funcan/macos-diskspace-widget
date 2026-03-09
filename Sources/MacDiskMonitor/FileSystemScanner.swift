@@ -27,6 +27,8 @@ final class FileSystemScanner {
     private var scanWorkerActive = false
     private var rootTreeNode = MutableTreeNode(name: "/", path: "/")
     private var directoryStack: [ScanTask] = []
+    private var canonicalDirectoryPathByID: [FileIdentity: String] = [:]
+    private var visitedFileIDs: Set<FileIdentity> = []
     private var scannedFiles: Int = 0
     private var scannedBytes: UInt64 = 0
     private var scanActiveStartDate: Date?
@@ -75,6 +77,8 @@ final class FileSystemScanner {
             rootTreeNode = MutableTreeNode(name: "/", path: "/")
             rootTreeNode.approximateSize = loadRootFilesystemTotalSize()
             seedApproximateTree()
+            canonicalDirectoryPathByID = [:]
+            visitedFileIDs = []
             scannedFiles = 0
             scannedBytes = 0
             directoryStack = [
@@ -124,6 +128,11 @@ final class FileSystemScanner {
     private func processTask(_ task: ScanTask) {
         if task.kind == .finalize {
             task.representedNode?.isFullyScanned = true
+            return
+        }
+
+        if !markDirectoryVisited(path: task.url.path) {
+            pruneDuplicateNode(task.representedNode)
             return
         }
 
@@ -197,6 +206,15 @@ final class FileSystemScanner {
         }
     }
 
+    private func pruneDuplicateNode(_ node: MutableTreeNode?) {
+        guard let node, let parent = node.parent else {
+            node?.isFullyScanned = true
+            return
+        }
+
+        parent.children.removeValue(forKey: node.name)
+    }
+
     private func processInitialTopLevelDirectories(_ childDirectories: [URL], rootTask: ScanTask) {
         if rootTask.representedNode != nil {
             pushTask(
@@ -235,9 +253,7 @@ final class FileSystemScanner {
     }
 
     private func orderedChildDirectories(for task: ScanTask, from directories: [URL]) -> [URL] {
-        let sorted = directories.sorted {
-            $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
-        }
+        let sorted = directories.sorted { isPathPreferred($0.path, over: $1.path) }
 
         // Prioritize /Users early in the root traversal so user data appears quickly.
         if task.depth == 0, task.url.path == "/" {
@@ -271,7 +287,8 @@ final class FileSystemScanner {
                     if
                         let type = attributes[.type] as? FileAttributeType,
                         type == .typeRegular,
-                        let size = attributes[.size] as? NSNumber
+                        let size = attributes[.size] as? NSNumber,
+                        markFileVisited(attributes: attributes)
                     {
                         localFiles += 1
                         localBytes += size.uint64Value
@@ -356,6 +373,75 @@ final class FileSystemScanner {
         scanStateLock.withLock {
             directoryStack.append(task)
         }
+    }
+
+    private func markDirectoryVisited(path: String) -> Bool {
+        guard let identity = fileIdentity(path: path) else {
+            return true
+        }
+
+        return scanStateLock.withLock {
+            if let canonicalPath = canonicalDirectoryPathByID[identity] {
+                return canonicalPath == path
+            }
+
+            canonicalDirectoryPathByID[identity] = path
+            return true
+        }
+    }
+
+    private func isPathPreferred(_ lhs: String, over rhs: String) -> Bool {
+        let lhsInUsers = lhs.hasPrefix("/Users/") || lhs == "/Users"
+        let rhsInUsers = rhs.hasPrefix("/Users/") || rhs == "/Users"
+        if lhsInUsers != rhsInUsers {
+            return lhsInUsers
+        }
+
+        let lhsInData = isDataAliasPath(lhs)
+        let rhsInData = isDataAliasPath(rhs)
+        if lhsInData != rhsInData {
+            return !lhsInData
+        }
+
+        if lhs.count != rhs.count {
+            return lhs.count < rhs.count
+        }
+
+        return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+    }
+
+    private func isDataAliasPath(_ path: String) -> Bool {
+        path.hasPrefix("/System/Volumes/Data/") || path.hasPrefix("/Data/") || path == "/Data"
+    }
+
+    private func markFileVisited(attributes: [FileAttributeKey: Any]) -> Bool {
+        guard let identity = fileIdentity(attributes: attributes) else {
+            return true
+        }
+
+        return scanStateLock.withLock {
+            visitedFileIDs.insert(identity).inserted
+        }
+    }
+
+    private func fileIdentity(path: String) -> FileIdentity? {
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            return fileIdentity(attributes: attributes)
+        } catch {
+            return nil
+        }
+    }
+
+    private func fileIdentity(attributes: [FileAttributeKey: Any]) -> FileIdentity? {
+        guard
+            let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+            let systemNumber = (attributes[.systemNumber] as? NSNumber)?.uint64Value
+        else {
+            return nil
+        }
+
+        return FileIdentity(deviceID: systemNumber, inode: fileNumber)
     }
 
     private func isScanRequested() -> Bool {
@@ -594,6 +680,11 @@ private struct DirectoryEntry {
     let url: URL
     let isDirectory: Bool
     let isRegularFile: Bool
+}
+
+private struct FileIdentity: Hashable {
+    let deviceID: UInt64
+    let inode: UInt64
 }
 
 private struct ScanTask {
