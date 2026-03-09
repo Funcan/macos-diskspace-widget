@@ -19,6 +19,8 @@ final class FileSystemScanner {
     private let statWorkerCount = 8
     private let progressUpdateInterval: TimeInterval = 0.25
     private let depthCutoffPercent = 0.05
+    private let approximateSeedDepth = 3
+    private let approximateSeedMaxChildrenPerParent = 200
     private let maxTrackedDepth: Int
 
     private var scanRequested = false
@@ -71,6 +73,8 @@ final class FileSystemScanner {
     private func scanLoop() {
         if directoryStack.isEmpty {
             rootTreeNode = MutableTreeNode(name: "/", path: "/")
+            rootTreeNode.approximateSize = loadRootFilesystemTotalSize()
+            seedApproximateTree()
             scannedFiles = 0
             scannedBytes = 0
             directoryStack = [
@@ -84,6 +88,7 @@ final class FileSystemScanner {
             ]
             resetScanTiming()
             markScanResumed()
+            emitProgress(currentSnapshot())
         }
 
         if lastProgressEmitDate == nil {
@@ -351,6 +356,59 @@ final class FileSystemScanner {
         return ScanSnapshot(files: scannedFiles, bytes: scannedBytes, elapsed: elapsed, filesPerSecond: rate, icicleNodes: nodes)
     }
 
+    private func seedApproximateTree() {
+        var queue: [(node: MutableTreeNode, url: URL, depth: Int)] = [
+            (node: rootTreeNode, url: URL(fileURLWithPath: "/", isDirectory: true), depth: 0),
+        ]
+
+        var index = 0
+        while index < queue.count {
+            let current = queue[index]
+            index += 1
+
+            if current.depth >= approximateSeedDepth {
+                continue
+            }
+
+            let childDirectories = listDirectoryEntries(at: current.url)
+                .filter(\.isDirectory)
+                .sorted { $0.url.lastPathComponent.localizedCaseInsensitiveCompare($1.url.lastPathComponent) == .orderedAscending }
+                .prefix(approximateSeedMaxChildrenPerParent)
+
+            guard !childDirectories.isEmpty else { continue }
+
+            let parentEstimate = effectiveSize(for: current.node)
+            guard parentEstimate > 0 else { continue }
+
+            let share = max(1, parentEstimate / UInt64(childDirectories.count))
+            for childDirectory in childDirectories {
+                let childNode = current.node.childNode(named: childDirectory.url.lastPathComponent)
+                childNode.approximateSize = max(childNode.approximateSize ?? 0, share)
+                queue.append((node: childNode, url: childDirectory.url, depth: current.depth + 1))
+            }
+        }
+    }
+
+    private func loadRootFilesystemTotalSize() -> UInt64 {
+        do {
+            let attributes = try FileManager.default.attributesOfFileSystem(forPath: "/")
+            if let total = (attributes[.systemSize] as? NSNumber)?.uint64Value, total > 0 {
+                return total
+            }
+        } catch {
+            return 1
+        }
+
+        return 1
+    }
+
+    private func effectiveSize(for node: MutableTreeNode) -> UInt64 {
+        if node.isFullyScanned {
+            return node.size
+        }
+        return max(node.size, node.approximateSize ?? 0)
+    }
+
     private func buildIcicleNodesLocked() -> [IcicleNode] {
         let topNodes = sortedChildren(of: rootTreeNode)
         guard !topNodes.isEmpty else { return [] }
@@ -360,7 +418,7 @@ final class FileSystemScanner {
     }
 
     private func maxDisplayDepth(topNodes: [MutableTreeNode]) -> Int {
-        let scannedTotal = rootTreeNode.size
+        let scannedTotal = effectiveSize(for: rootTreeNode)
         guard scannedTotal > 0 else {
             return 2
         }
@@ -370,7 +428,7 @@ final class FileSystemScanner {
         var currentRow = topNodes
 
         while !currentRow.isEmpty {
-            if currentRow.allSatisfy({ $0.size < threshold }) {
+            if currentRow.allSatisfy({ effectiveSize(for: $0) < threshold }) {
                 break
             }
 
@@ -396,7 +454,7 @@ final class FileSystemScanner {
         return IcicleNode(
             name: node.name,
             path: node.path,
-            size: node.size,
+            size: effectiveSize(for: node),
             isFullyScanned: node.isFullyScanned,
             children: children
         )
@@ -404,12 +462,14 @@ final class FileSystemScanner {
 
     private func sortedChildren(of node: MutableTreeNode) -> [MutableTreeNode] {
         node.children.values
-            .filter { $0.size > 0 }
+            .filter { effectiveSize(for: $0) > 0 }
             .sorted {
-                if $0.size == $1.size {
+                let lhsSize = effectiveSize(for: $0)
+                let rhsSize = effectiveSize(for: $1)
+                if lhsSize == rhsSize {
                     return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
                 }
-                return $0.size > $1.size
+                return lhsSize > rhsSize
             }
     }
 
@@ -497,6 +557,7 @@ private final class MutableTreeNode {
     var path: String
     weak var parent: MutableTreeNode?
     var size: UInt64 = 0
+    var approximateSize: UInt64?
     var isFullyScanned = false
     var children: [String: MutableTreeNode] = [:]
 
