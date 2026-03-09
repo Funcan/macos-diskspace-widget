@@ -34,7 +34,7 @@ final class FileSystemScanner {
     private var lastRateSampleDate: Date?
     private var lastRateSampleFileCount: Int = 0
 
-    init(maxTrackedDepth: Int = 12) {
+    init(maxTrackedDepth: Int = 9) {
         self.maxTrackedDepth = max(1, maxTrackedDepth)
     }
 
