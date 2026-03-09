@@ -5,6 +5,7 @@ struct ScanSnapshot {
     let bytes: UInt64
     let elapsed: TimeInterval
     let filesPerSecond: Int
+    let icicleNodes: [IcicleNode]
 }
 
 final class FileSystemScanner {
@@ -16,13 +17,17 @@ final class FileSystemScanner {
     private let scanStateLock = NSLock()
     private let statWorkerCount = 8
     private let statBatchSize = 256
+    private let progressUpdateInterval: TimeInterval = 0.25
+    private let depthCutoffPercent = 0.05
 
     private var scanRequested = false
     private var scanWorkerActive = false
     private var scanEnumerator: FileManager.DirectoryEnumerator?
+    private var rootTreeNode = MutableTreeNode(name: "/", path: "/")
     private var scannedFiles: Int = 0
     private var scannedBytes: UInt64 = 0
     private var scanActiveStartDate: Date?
+    private var lastProgressEmitDate: Date?
     private var accumulatedScanDuration: TimeInterval = 0
     private var displayedFilesPerSecond: Int = 0
     private var lastRateSampleDate: Date?
@@ -63,13 +68,15 @@ final class FileSystemScanner {
 
         if scanEnumerator == nil {
             scanEnumerator = fileManager.enumerator(atPath: "/")
+            rootTreeNode = MutableTreeNode(name: "/", path: "/")
             scannedFiles = 0
             scannedBytes = 0
             resetScanTiming()
             markScanResumed()
         }
-
-        var processedSinceUpdate = 0
+        if lastProgressEmitDate == nil {
+            lastProgressEmitDate = Date()
+        }
 
         while isScanRequested() {
             guard let firstEntry = scanEnumerator?.nextObject() as? String else {
@@ -90,15 +97,16 @@ final class FileSystemScanner {
                 batch.append(nextEntry)
             }
 
-            let (batchFiles, batchBytes) = processBatch(batch)
+            let batchResult = processBatch(batch)
             scanStateLock.withLock {
-                scannedFiles += batchFiles
-                scannedBytes += batchBytes
+                scannedFiles += batchResult.files
+                scannedBytes += batchResult.bytes
+                applyFileContributions(batchResult.fileContributions)
             }
 
-            processedSinceUpdate += batch.count
-            if processedSinceUpdate >= 500 {
-                processedSinceUpdate = 0
+            let now = Date()
+            if let lastEmit = lastProgressEmitDate, now.timeIntervalSince(lastEmit) >= progressUpdateInterval {
+                lastProgressEmitDate = now
                 emitProgress(currentSnapshot())
             }
         }
@@ -107,15 +115,17 @@ final class FileSystemScanner {
         emitPaused(currentSnapshot(forceZeroRate: true))
     }
 
-    private func processBatch(_ entries: [String]) -> (files: Int, bytes: UInt64) {
+    private func processBatch(_ entries: [String]) -> BatchResult {
         let workers = min(statWorkerCount, max(1, entries.count))
         var fileCounts = Array(repeating: 0, count: workers)
         var byteCounts = Array(repeating: UInt64(0), count: workers)
+        var fileContributions = Array(repeating: [(String, UInt64)](), count: workers)
 
         DispatchQueue.concurrentPerform(iterations: workers) { worker in
             let fileManager = FileManager()
             var localFiles = 0
             var localBytes: UInt64 = 0
+            var localContributions: [(String, UInt64)] = []
             var index = worker
 
             while index < entries.count {
@@ -129,6 +139,7 @@ final class FileSystemScanner {
                     {
                         localFiles += 1
                         localBytes += size.uint64Value
+                        localContributions.append((entries[index], size.uint64Value))
                     }
                 } catch {
                     // Best-effort scan: skip paths we cannot stat.
@@ -139,11 +150,13 @@ final class FileSystemScanner {
 
             fileCounts[worker] = localFiles
             byteCounts[worker] = localBytes
+            fileContributions[worker] = localContributions
         }
 
         let totalFiles = fileCounts.reduce(0, +)
         let totalBytes = byteCounts.reduce(0, +)
-        return (totalFiles, totalBytes)
+        let allContributions = fileContributions.flatMap { $0 }
+        return BatchResult(files: totalFiles, bytes: totalBytes, fileContributions: allContributions)
     }
 
     private func isScanRequested() -> Bool {
@@ -165,6 +178,7 @@ final class FileSystemScanner {
     private func resetScanTiming() {
         scanStateLock.withLock {
             scanActiveStartDate = nil
+            lastProgressEmitDate = nil
             accumulatedScanDuration = 0
             displayedFilesPerSecond = 0
             lastRateSampleDate = nil
@@ -196,7 +210,95 @@ final class FileSystemScanner {
     private func makeSnapshotLocked(forceZeroRate: Bool) -> ScanSnapshot {
         let elapsed = elapsedScanDurationLocked()
         let rate = sampledFilesPerSecondLocked(forceZero: forceZeroRate)
-        return ScanSnapshot(files: scannedFiles, bytes: scannedBytes, elapsed: elapsed, filesPerSecond: rate)
+        let nodes = buildIcicleNodesLocked()
+        return ScanSnapshot(files: scannedFiles, bytes: scannedBytes, elapsed: elapsed, filesPerSecond: rate, icicleNodes: nodes)
+    }
+
+    private func applyFileContributions(_ contributions: [(String, UInt64)]) {
+        for (relativePath, bytes) in contributions {
+            addFile(path: relativePath, size: bytes)
+        }
+    }
+
+    private func addFile(path relativePath: String, size: UInt64) {
+        guard size > 0 else { return }
+
+        let components = relativePath.split(separator: "/").map(String.init)
+        guard !components.isEmpty else { return }
+
+        rootTreeNode.size += size
+        var current = rootTreeNode
+        for (index, component) in components.enumerated() {
+            let childPath = current.path == "/" ? "/\(component)" : "\(current.path)/\(component)"
+            let child = current.children[component] ?? {
+                let node = MutableTreeNode(name: component, path: childPath)
+                current.children[component] = node
+                return node
+            }()
+
+            child.size += size
+            current = child
+
+            if index == components.count - 1 {
+                current.isLeafFile = true
+            }
+        }
+    }
+
+    private func buildIcicleNodesLocked() -> [IcicleNode] {
+        let topNodes = sortedChildren(of: rootTreeNode)
+        guard !topNodes.isEmpty else { return [] }
+
+        let maxDepth = maxDisplayDepth(topNodes: topNodes)
+        return topNodes.map { buildIcicleNode(from: $0, currentDepth: 1, maxDepth: maxDepth) }
+    }
+
+    private func maxDisplayDepth(topNodes: [MutableTreeNode]) -> Int {
+        let scannedTotal = rootTreeNode.size
+        guard scannedTotal > 0 else {
+            return 2
+        }
+
+        let threshold = UInt64(Double(scannedTotal) * depthCutoffPercent)
+        var depth = 1
+        var currentRow = topNodes
+
+        while !currentRow.isEmpty {
+            if currentRow.allSatisfy({ $0.size < threshold }) {
+                break
+            }
+
+            let nextRow = currentRow.flatMap { sortedChildren(of: $0) }
+            if nextRow.isEmpty {
+                break
+            }
+
+            depth += 1
+            currentRow = nextRow
+        }
+
+        return depth
+    }
+
+    private func buildIcicleNode(from node: MutableTreeNode, currentDepth: Int, maxDepth: Int) -> IcicleNode {
+        let children: [IcicleNode] = if currentDepth < maxDepth {
+            sortedChildren(of: node).map { buildIcicleNode(from: $0, currentDepth: currentDepth + 1, maxDepth: maxDepth) }
+        } else {
+            []
+        }
+
+        return IcicleNode(name: node.name, path: node.path, size: node.size, children: children)
+    }
+
+    private func sortedChildren(of node: MutableTreeNode) -> [MutableTreeNode] {
+        node.children.values
+            .filter { $0.size > 0 }
+            .sorted {
+                if $0.size == $1.size {
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+                return $0.size > $1.size
+            }
     }
 
     private func elapsedScanDurationLocked() -> TimeInterval {
@@ -249,6 +351,25 @@ final class FileSystemScanner {
         DispatchQueue.main.async { [weak self] in
             self?.onCompleted?(snapshot)
         }
+    }
+}
+
+private struct BatchResult {
+    let files: Int
+    let bytes: UInt64
+    let fileContributions: [(String, UInt64)]
+}
+
+private final class MutableTreeNode {
+    let name: String
+    let path: String
+    var size: UInt64 = 0
+    var isLeafFile = false
+    var children: [String: MutableTreeNode] = [:]
+
+    init(name: String, path: String) {
+        self.name = name
+        self.path = path
     }
 }
 

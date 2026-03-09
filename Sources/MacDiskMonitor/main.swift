@@ -53,14 +53,17 @@ final class AnalysisViewController: NSViewController {
         ])
 
         scanner.onProgress = { [weak self] snapshot in
+            self?.canvasView.rootNodes = snapshot.icicleNodes
             self?.statusLabel.stringValue = self?.makeStatus(prefix: "Scanning", snapshot: snapshot) ?? ""
         }
         scanner.onPaused = { [weak self] snapshot in
+            self?.canvasView.rootNodes = snapshot.icicleNodes
             self?.statusLabel.stringValue = self?.makeStatus(prefix: "Paused", snapshot: snapshot) ?? ""
         }
         scanner.onCompleted = { [weak self] snapshot in
             guard let self else { return }
             isRunning = false
+            canvasView.rootNodes = snapshot.icicleNodes
             statusLabel.stringValue = makeStatus(prefix: "Scan complete", snapshot: snapshot)
         }
     }
@@ -76,6 +79,7 @@ final class AnalysisViewController: NSViewController {
         if isRunning {
             scanner.startOrResume()
             let snapshot = scanner.currentSnapshot()
+            canvasView.rootNodes = snapshot.icicleNodes
             statusLabel.stringValue = makeStatus(prefix: "Scanning", snapshot: snapshot)
         } else {
             scanner.pause()
