@@ -3,7 +3,15 @@ import Foundation
 
 final class AnalysisViewController: NSViewController {
     private let canvasView = NSView()
+    private let statusLabel = NSTextField(labelWithString: "Ready to scan")
     private let toggleButton = NSButton(title: "Start", target: nil, action: nil)
+    private let scanQueue = DispatchQueue(label: "MacDiskMonitor.AnalysisScan", qos: .utility)
+    private let scanStateLock = NSLock()
+    private var scanRequested = false
+    private var scanWorkerActive = false
+    private var scanEnumerator: FileManager.DirectoryEnumerator?
+    private var scannedFiles: Int = 0
+    private var scannedBytes: UInt64 = 0
     private var isRunning = false {
         didSet {
             toggleButton.title = isRunning ? "Pause" : "Start"
@@ -20,6 +28,11 @@ final class AnalysisViewController: NSViewController {
         canvasView.layer?.borderWidth = 1
         canvasView.translatesAutoresizingMaskIntoConstraints = false
 
+        statusLabel.alignment = .center
+        statusLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
         toggleButton.bezelStyle = .rounded
         toggleButton.setButtonType(.momentaryPushIn)
         toggleButton.target = self
@@ -27,13 +40,18 @@ final class AnalysisViewController: NSViewController {
         toggleButton.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(canvasView)
+        view.addSubview(statusLabel)
         view.addSubview(toggleButton)
 
         NSLayoutConstraint.activate([
             canvasView.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
             canvasView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             canvasView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            canvasView.bottomAnchor.constraint(equalTo: toggleButton.topAnchor, constant: -20),
+            canvasView.bottomAnchor.constraint(equalTo: statusLabel.topAnchor, constant: -14),
+
+            statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            statusLabel.bottomAnchor.constraint(equalTo: toggleButton.topAnchor, constant: -10),
 
             toggleButton.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
             toggleButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -47,7 +65,118 @@ final class AnalysisViewController: NSViewController {
             showFullDiskAccessInstructions()
             return
         }
+
         isRunning.toggle()
+
+        if isRunning {
+            statusLabel.stringValue = "Scanning..."
+            startOrResumeScan()
+        } else {
+            pauseScan()
+        }
+    }
+
+    private func startOrResumeScan() {
+        setScanRequested(true)
+
+        let shouldStartWorker: Bool = scanStateLock.withLock {
+            if scanWorkerActive {
+                return false
+            }
+            scanWorkerActive = true
+            return true
+        }
+
+        guard shouldStartWorker else { return }
+
+        scanQueue.async { [weak self] in
+            self?.scanLoop()
+        }
+    }
+
+    private func pauseScan() {
+        setScanRequested(false)
+    }
+
+    private func scanLoop() {
+        let fileManager = FileManager.default
+
+        if scanEnumerator == nil {
+            scanEnumerator = fileManager.enumerator(atPath: "/")
+            scannedFiles = 0
+            scannedBytes = 0
+        }
+
+        var processedSinceUpdate = 0
+
+        while isScanRequested() {
+            guard let nextEntry = scanEnumerator?.nextObject() as? String else {
+                scanEnumerator = nil
+                setScanRequested(false)
+                setScanWorkerActive(false)
+
+                let summary = "Scan complete: \(scannedFiles) files, \(formatBytes(scannedBytes))"
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    isRunning = false
+                    statusLabel.stringValue = summary
+                }
+                return
+            }
+
+            do {
+                let fullPath = "/\(nextEntry)"
+                let attributes = try fileManager.attributesOfItem(atPath: fullPath)
+                if
+                    let type = attributes[.type] as? FileAttributeType,
+                    type == .typeRegular,
+                    let size = attributes[.size] as? NSNumber
+                {
+                    scannedFiles += 1
+                    scannedBytes += size.uint64Value
+                }
+            } catch {
+                continue
+            }
+
+            processedSinceUpdate += 1
+            if processedSinceUpdate >= 500 {
+                processedSinceUpdate = 0
+                let progress = "Scanning: \(scannedFiles) files, \(formatBytes(scannedBytes))"
+                DispatchQueue.main.async { [weak self] in
+                    self?.statusLabel.stringValue = progress
+                }
+            }
+        }
+
+        setScanWorkerActive(false)
+        let paused = "Paused: \(scannedFiles) files, \(formatBytes(scannedBytes))"
+        DispatchQueue.main.async { [weak self] in
+            self?.statusLabel.stringValue = paused
+        }
+    }
+
+    private func isScanRequested() -> Bool {
+        scanStateLock.withLock { scanRequested }
+    }
+
+    private func setScanRequested(_ requested: Bool) {
+        scanStateLock.withLock {
+            scanRequested = requested
+        }
+    }
+
+    private func setScanWorkerActive(_ active: Bool) {
+        scanStateLock.withLock {
+            scanWorkerActive = active
+        }
+    }
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(bytes))
     }
 
     private func hasFullDiskAccess() -> Bool {
@@ -90,6 +219,14 @@ final class AnalysisViewController: NSViewController {
             "3. Turn it on, then reopen this app and click Start again."
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T {
+        lock()
+        defer { unlock() }
+        return body()
     }
 }
 
