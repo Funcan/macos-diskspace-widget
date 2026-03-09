@@ -146,6 +146,18 @@ final class FileSystemScanner {
             addBytes(batchResult.bytes, to: task.targetNode)
         }
 
+        if task.representedNode != nil {
+            pushTask(
+                ScanTask(
+                    kind: .finalize,
+                    url: task.url,
+                    targetNode: task.targetNode,
+                    representedNode: task.representedNode,
+                    depth: task.depth
+                )
+            )
+        }
+
         // Push in reverse lexical order so pop() gives depth-first lexical traversal.
         for childDirectory in childDirectories.sorted(by: { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedDescending }) {
             let childDepth = task.depth + 1
@@ -172,18 +184,6 @@ final class FileSystemScanner {
                     )
                 )
             }
-        }
-
-        if task.representedNode != nil {
-            pushTask(
-                ScanTask(
-                    kind: .finalize,
-                    url: task.url,
-                    targetNode: task.targetNode,
-                    representedNode: task.representedNode,
-                    depth: task.depth
-                )
-            )
         }
     }
 
@@ -393,7 +393,13 @@ final class FileSystemScanner {
             []
         }
 
-        return IcicleNode(name: node.name, path: node.path, size: node.size, children: children)
+        return IcicleNode(
+            name: node.name,
+            path: node.path,
+            size: node.size,
+            isFullyScanned: node.isFullyScanned,
+            children: children
+        )
     }
 
     private func sortedChildren(of node: MutableTreeNode) -> [MutableTreeNode] {

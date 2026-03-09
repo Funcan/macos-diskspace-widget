@@ -5,6 +5,7 @@ struct IcicleNode {
     let name: String
     let path: String
     let size: UInt64
+    let isFullyScanned: Bool
     let children: [IcicleNode]
 }
 
@@ -73,7 +74,8 @@ final class FilesystemIcicleView: NSView {
                 path: item.node.path,
                 depth: item.depth,
                 siblingIndex: item.siblingIndex,
-                siblingCount: item.siblingCount
+                siblingCount: item.siblingCount,
+                isFullyScanned: item.node.isFullyScanned
             )
             color.setFill()
             item.rect.fill()
@@ -199,7 +201,11 @@ final class FilesystemIcicleView: NSView {
         text.draw(at: NSPoint(x: bubbleRect.minX + 8, y: bubbleRect.minY + 5))
     }
 
-    private func colorForNode(path: String, depth: Int, siblingIndex: Int, siblingCount: Int) -> NSColor {
+    private func colorForNode(path: String, depth: Int, siblingIndex: Int, siblingCount: Int, isFullyScanned: Bool) -> NSColor {
+        guard isFullyScanned else {
+            return NSColor(calibratedWhite: 0.72, alpha: 1)
+        }
+
         let hue: CGFloat
         if depth == 1 {
             hue = topRowHue(index: siblingIndex, total: siblingCount)

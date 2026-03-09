@@ -159,6 +159,7 @@ final class AnalysisViewController: NSViewController {
                 name: "/",
                 path: "/",
                 size: rootSize,
+                isFullyScanned: false,
                 children: []
             ),
         ]
