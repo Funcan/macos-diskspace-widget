@@ -7,11 +7,18 @@ final class AnalysisViewController: NSViewController {
     private let toggleButton = NSButton(title: "Start", target: nil, action: nil)
     private let scanQueue = DispatchQueue(label: "MacDiskMonitor.AnalysisScan", qos: .utility)
     private let scanStateLock = NSLock()
+    private let statWorkerCount = 8
+    private let statBatchSize = 256
     private var scanRequested = false
     private var scanWorkerActive = false
     private var scanEnumerator: FileManager.DirectoryEnumerator?
     private var scannedFiles: Int = 0
     private var scannedBytes: UInt64 = 0
+    private var scanActiveStartDate: Date?
+    private var accumulatedScanDuration: TimeInterval = 0
+    private var displayedFilesPerSecond: Int = 0
+    private var lastRateSampleDate: Date?
+    private var lastRateSampleFileCount: Int = 0
     private var isRunning = false {
         didSet {
             toggleButton.title = isRunning ? "Pause" : "Start"
@@ -69,9 +76,11 @@ final class AnalysisViewController: NSViewController {
         isRunning.toggle()
 
         if isRunning {
-            statusLabel.stringValue = "Scanning..."
+            markScanResumed()
+            statusLabel.stringValue = makeStatus(prefix: "Scanning")
             startOrResumeScan()
         } else {
+            markScanPaused()
             pauseScan()
         }
     }
@@ -105,17 +114,20 @@ final class AnalysisViewController: NSViewController {
             scanEnumerator = fileManager.enumerator(atPath: "/")
             scannedFiles = 0
             scannedBytes = 0
+            resetScanTiming()
+            markScanResumed()
         }
 
         var processedSinceUpdate = 0
 
         while isScanRequested() {
-            guard let nextEntry = scanEnumerator?.nextObject() as? String else {
+            guard let firstEntry = scanEnumerator?.nextObject() as? String else {
                 scanEnumerator = nil
                 setScanRequested(false)
                 setScanWorkerActive(false)
+                markScanPaused()
 
-                let summary = "Scan complete: \(scannedFiles) files, \(formatBytes(scannedBytes))"
+                let summary = makeStatus(prefix: "Scan complete")
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     isRunning = false
@@ -124,25 +136,22 @@ final class AnalysisViewController: NSViewController {
                 return
             }
 
-            do {
-                let fullPath = "/\(nextEntry)"
-                let attributes = try fileManager.attributesOfItem(atPath: fullPath)
-                if
-                    let type = attributes[.type] as? FileAttributeType,
-                    type == .typeRegular,
-                    let size = attributes[.size] as? NSNumber
-                {
-                    scannedFiles += 1
-                    scannedBytes += size.uint64Value
+            var batch: [String] = [firstEntry]
+            while isScanRequested(), batch.count < statBatchSize {
+                guard let nextEntry = scanEnumerator?.nextObject() as? String else {
+                    break
                 }
-            } catch {
-                continue
+                batch.append(nextEntry)
             }
 
-            processedSinceUpdate += 1
+            let (batchFiles, batchBytes) = processBatch(batch)
+            scannedFiles += batchFiles
+            scannedBytes += batchBytes
+
+            processedSinceUpdate += batch.count
             if processedSinceUpdate >= 500 {
                 processedSinceUpdate = 0
-                let progress = "Scanning: \(scannedFiles) files, \(formatBytes(scannedBytes))"
+                let progress = makeStatus(prefix: "Scanning")
                 DispatchQueue.main.async { [weak self] in
                     self?.statusLabel.stringValue = progress
                 }
@@ -150,10 +159,49 @@ final class AnalysisViewController: NSViewController {
         }
 
         setScanWorkerActive(false)
-        let paused = "Paused: \(scannedFiles) files, \(formatBytes(scannedBytes))"
+        let paused = makeStatus(prefix: "Paused", forceZeroRate: true)
         DispatchQueue.main.async { [weak self] in
             self?.statusLabel.stringValue = paused
         }
+    }
+
+    private func processBatch(_ entries: [String]) -> (files: Int, bytes: UInt64) {
+        let workers = min(statWorkerCount, max(1, entries.count))
+        var fileCounts = Array(repeating: 0, count: workers)
+        var byteCounts = Array(repeating: UInt64(0), count: workers)
+
+        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+            let fileManager = FileManager()
+            var localFiles = 0
+            var localBytes: UInt64 = 0
+            var index = worker
+
+            while index < entries.count {
+                let fullPath = "/\(entries[index])"
+                do {
+                    let attributes = try fileManager.attributesOfItem(atPath: fullPath)
+                    if
+                        let type = attributes[.type] as? FileAttributeType,
+                        type == .typeRegular,
+                        let size = attributes[.size] as? NSNumber
+                    {
+                        localFiles += 1
+                        localBytes += size.uint64Value
+                    }
+                } catch {
+                    // Best-effort scan: skip paths we cannot stat.
+                }
+
+                index += workers
+            }
+
+            fileCounts[worker] = localFiles
+            byteCounts[worker] = localBytes
+        }
+
+        let totalFiles = fileCounts.reduce(0, +)
+        let totalBytes = byteCounts.reduce(0, +)
+        return (totalFiles, totalBytes)
     }
 
     private func isScanRequested() -> Bool {
@@ -170,6 +218,93 @@ final class AnalysisViewController: NSViewController {
         scanStateLock.withLock {
             scanWorkerActive = active
         }
+    }
+
+    private func resetScanTiming() {
+        scanStateLock.withLock {
+            scanActiveStartDate = nil
+            accumulatedScanDuration = 0
+            displayedFilesPerSecond = 0
+            lastRateSampleDate = nil
+            lastRateSampleFileCount = scannedFiles
+        }
+    }
+
+    private func markScanResumed() {
+        scanStateLock.withLock {
+            if scanActiveStartDate == nil {
+                scanActiveStartDate = Date()
+            }
+            lastRateSampleDate = Date()
+            lastRateSampleFileCount = scannedFiles
+        }
+    }
+
+    private func markScanPaused() {
+        scanStateLock.withLock {
+            guard let startDate = scanActiveStartDate else { return }
+            accumulatedScanDuration += Date().timeIntervalSince(startDate)
+            scanActiveStartDate = nil
+            displayedFilesPerSecond = 0
+            lastRateSampleDate = nil
+            lastRateSampleFileCount = scannedFiles
+        }
+    }
+
+    private func elapsedScanDuration() -> TimeInterval {
+        scanStateLock.withLock {
+            let runningDuration: TimeInterval = if let startDate = scanActiveStartDate {
+                Date().timeIntervalSince(startDate)
+            } else {
+                0
+            }
+            return accumulatedScanDuration + runningDuration
+        }
+    }
+
+    private func makeStatus(prefix: String, forceZeroRate: Bool = false) -> String {
+        let elapsed = elapsedScanDuration()
+        let rate = sampledFilesPerSecond(forceZero: forceZeroRate)
+        return "\(prefix): \(scannedFiles) files, \(formatBytes(scannedBytes)) | \(formatDuration(elapsed)) | \(rate) files/s"
+    }
+
+    private func sampledFilesPerSecond(forceZero: Bool) -> Int {
+        scanStateLock.withLock {
+            if forceZero {
+                displayedFilesPerSecond = 0
+                return 0
+            }
+
+            let now = Date()
+            if let lastSampleDate = lastRateSampleDate {
+                let delta = now.timeIntervalSince(lastSampleDate)
+                if delta >= 1 {
+                    let fileDelta = scannedFiles - lastRateSampleFileCount
+                    let sampledRate = delta > 0 ? Double(fileDelta) / delta : 0
+                    displayedFilesPerSecond = max(0, Int(sampledRate.rounded()))
+                    lastRateSampleDate = now
+                    lastRateSampleFileCount = scannedFiles
+                }
+            } else {
+                lastRateSampleDate = now
+                lastRateSampleFileCount = scannedFiles
+                displayedFilesPerSecond = 0
+            }
+
+            return displayedFilesPerSecond
+        }
+    }
+
+    private func formatDuration(_ interval: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(interval.rounded()))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private func formatBytes(_ bytes: UInt64) -> String {
