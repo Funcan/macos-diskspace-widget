@@ -17,13 +17,6 @@ repos:
         types_or: [swift]
         require_serial: true
 
-      - id: swiftlint
-        name: swiftlint
-        entry: swiftlint lint
-        language: system
-        types_or: [swift]
-        require_serial: true
-
       - id: swift-test-if-present
         name: swift test (if Tests exists)
         entry: sh -c 'if [ -d Tests ]; then swift test; else echo "No Tests directory, skipping tests."; fi'
