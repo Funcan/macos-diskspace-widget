@@ -152,39 +152,29 @@ final class AnalysisViewController: NSViewController {
     }
 
     private func demoIcicleData() -> [IcicleNode] {
-        let oneMB: UInt64 = 1_048_576
+        let rootSize = initialRootFilesystemSize()
 
         return [
             IcicleNode(
-                name: "foo",
-                path: "/foo",
-                size: 2 * oneMB,
-                children: [
-                    IcicleNode(name: "a", path: "/foo/a", size: oneMB, children: []),
-                    IcicleNode(name: "b", path: "/foo/b", size: oneMB, children: []),
-                ]
-            ),
-            IcicleNode(
-                name: "bar",
-                path: "/bar",
-                size: 2 * oneMB,
-                children: [
-                    IcicleNode(name: "c", path: "/bar/c", size: oneMB, children: []),
-                    IcicleNode(name: "d", path: "/bar/d", size: oneMB, children: []),
-                ]
-            ),
-            IcicleNode(
-                name: "baz",
-                path: "/baz",
-                size: 4 * oneMB,
-                children: [
-                    IcicleNode(name: "e", path: "/baz/e", size: oneMB, children: []),
-                    IcicleNode(name: "f", path: "/baz/f", size: oneMB, children: []),
-                    IcicleNode(name: "g", path: "/baz/g", size: oneMB, children: []),
-                    IcicleNode(name: "h", path: "/baz/h", size: oneMB, children: []),
-                ]
+                name: "/",
+                path: "/",
+                size: rootSize,
+                children: []
             ),
         ]
+    }
+
+    private func initialRootFilesystemSize() -> UInt64 {
+        do {
+            let attributes = try FileManager.default.attributesOfFileSystem(forPath: "/")
+            if let total = (attributes[.systemSize] as? NSNumber)?.uint64Value, total > 0 {
+                return total
+            }
+        } catch {
+            return 1
+        }
+
+        return 1
     }
 }
 
