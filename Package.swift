@@ -4,17 +4,17 @@ import PackageDescription
 let package = Package(
     name: "MacDiskMonitor",
     platforms: [
-        .macOS(.v12)
+        .macOS(.v12),
     ],
     products: [
-        .executable(name: "MacDiskMonitor", targets: ["MacDiskMonitor"])
+        .executable(name: "MacDiskMonitor", targets: ["MacDiskMonitor"]),
     ],
     targets: [
         .executableTarget(
             name: "MacDiskMonitor",
             linkerSettings: [
-                .linkedFramework("AppKit")
+                .linkedFramework("AppKit"),
             ]
-        )
+        ),
     ]
 )

@@ -1,0 +1,25 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: swiftformat
+        name: swiftformat
+        entry: swiftformat
+        language: system
+        types_or: [swift]
+        require_serial: true
+
+      - id: swiftlint
+        name: swiftlint
+        entry: swiftlint lint
+        language: system
+        types_or: [swift]
+        require_serial: true

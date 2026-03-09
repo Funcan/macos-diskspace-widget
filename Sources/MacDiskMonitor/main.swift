@@ -5,7 +5,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -40,7 +40,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
                 string: title,
                 attributes: [
                     .foregroundColor: color(for: percentUsed),
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
                 ]
             )
         } catch {
@@ -48,7 +48,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
                 string: "ERR",
                 attributes: [
                     .foregroundColor: NSColor.systemRed,
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
                 ]
             )
         }
