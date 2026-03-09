@@ -1,0 +1,38 @@
+name: PR CI
+
+on:
+  pull_request:
+
+jobs:
+  lint-test-build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Tooling
+        run: |
+          brew update
+          brew install swiftlint swiftformat
+          python -m pip install --upgrade pip
+          pip install pre-commit
+
+      - name: Run pre-commit
+        run: pre-commit run --all-files
+
+      - name: Run tests
+        run: |
+          if [ -d Tests ]; then
+            swift test
+          else
+            echo "No Tests directory found; skipping tests."
+          fi
+
+      - name: Build
+        run: swift build
