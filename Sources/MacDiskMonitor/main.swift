@@ -2,13 +2,20 @@ import AppKit
 import Foundation
 
 final class AnalysisViewController: NSViewController {
+    private enum ScanPhase {
+        case notStarted
+        case running
+        case paused
+        case completed
+    }
+
     private let canvasView = FilesystemIcicleView()
     private let statusLabel = NSTextField(labelWithString: "Ready to scan")
     private let toggleButton = NSButton(title: "Start", target: nil, action: nil)
     private let scanner = FileSystemScanner()
-    private var isRunning = false {
+    private var scanPhase: ScanPhase = .notStarted {
         didSet {
-            toggleButton.title = isRunning ? "Pause" : "Start"
+            toggleButton.title = buttonTitle(for: scanPhase)
         }
     }
 
@@ -53,36 +60,52 @@ final class AnalysisViewController: NSViewController {
         ])
 
         scanner.onProgress = { [weak self] snapshot in
+            self?.scanPhase = .running
             self?.canvasView.rootNodes = snapshot.icicleNodes
             self?.statusLabel.stringValue = self?.makeStatus(prefix: "Scanning", snapshot: snapshot) ?? ""
         }
         scanner.onPaused = { [weak self] snapshot in
+            self?.scanPhase = .paused
             self?.canvasView.rootNodes = snapshot.icicleNodes
             self?.statusLabel.stringValue = self?.makeStatus(prefix: "Paused", snapshot: snapshot) ?? ""
         }
         scanner.onCompleted = { [weak self] snapshot in
             guard let self else { return }
-            isRunning = false
+            scanPhase = .completed
             canvasView.rootNodes = snapshot.icicleNodes
             statusLabel.stringValue = makeStatus(prefix: "Scan complete", snapshot: snapshot)
         }
     }
 
     @objc private func toggleAnalysis() {
-        if !isRunning, !hasFullDiskAccess() {
+        if scanPhase == .running {
+            scanner.pause()
+            scanPhase = .paused
+            return
+        }
+
+        if !hasFullDiskAccess() {
             showFullDiskAccessInstructions()
             return
         }
 
-        isRunning.toggle()
+        scanner.startOrResume()
+        scanPhase = .running
+        let snapshot = scanner.currentSnapshot()
+        canvasView.rootNodes = snapshot.icicleNodes
+        statusLabel.stringValue = makeStatus(prefix: "Scanning", snapshot: snapshot)
+    }
 
-        if isRunning {
-            scanner.startOrResume()
-            let snapshot = scanner.currentSnapshot()
-            canvasView.rootNodes = snapshot.icicleNodes
-            statusLabel.stringValue = makeStatus(prefix: "Scanning", snapshot: snapshot)
-        } else {
-            scanner.pause()
+    private func buttonTitle(for phase: ScanPhase) -> String {
+        switch phase {
+        case .notStarted:
+            "Start"
+        case .running:
+            "Pause"
+        case .paused:
+            "Resume"
+        case .completed:
+            "Rescan"
         }
     }
 
