@@ -205,6 +205,7 @@ final class AnalysisViewController: NSViewController {
 final class DiskMonitorApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var statusMenu: NSMenu!
+    private var usageMenuItem: NSMenuItem!
     private var timer: Timer?
     private var analysisWindowController: NSWindowController?
 
@@ -223,6 +224,10 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         statusItem.button?.sendAction(on: [.rightMouseUp])
 
         statusMenu = NSMenu()
+        usageMenuItem = NSMenuItem(title: "Calculating…", action: nil, keyEquivalent: "")
+        usageMenuItem.isEnabled = false
+        statusMenu.addItem(usageMenuItem)
+        statusMenu.addItem(NSMenuItem.separator())
         statusMenu.addItem(NSMenuItem(title: "Analyse", action: #selector(showAnalysisWindow), keyEquivalent: ""))
         statusMenu.addItem(NSMenuItem.separator())
         statusMenu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
@@ -285,6 +290,33 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
                 ]
             )
         }
+
+        updateUsageMenuItem()
+    }
+
+    private func updateUsageMenuItem() {
+        do {
+            let attributes = try FileManager.default.attributesOfFileSystem(forPath: "/")
+            guard
+                let total = (attributes[.systemSize] as? NSNumber)?.int64Value,
+                let free = (attributes[.systemFreeSize] as? NSNumber)?.int64Value,
+                total > 0
+            else {
+                throw NSError(domain: "DiskMonitor", code: 1)
+            }
+
+            let used = total - free
+            usageMenuItem.title = "\(formatBytes(used)) used of \(formatBytes(total)) (\(formatBytes(free)) free)"
+        } catch {
+            usageMenuItem.title = "Usage unavailable"
+        }
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useGB, .useTB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 
     private func diskUsagePercent(forPath path: String) throws -> Int {
