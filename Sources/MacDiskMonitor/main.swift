@@ -268,11 +268,26 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    private struct DiskUsage {
+        let total: Int64
+        let free: Int64
+
+        var used: Int64 {
+            total - free
+        }
+
+        var percentUsed: Int {
+            let percent = (Double(used) / Double(total)) * 100
+            return Int(percent.rounded())
+        }
+    }
+
     private func updateStatus() {
         guard let button = statusItem.button else { return }
 
         do {
-            let percentUsed = try diskUsagePercent(forPath: "/")
+            let usage = try diskUsage(forPath: "/")
+            let percentUsed = usage.percentUsed
             let title = "\(percentUsed)%"
             button.attributedTitle = NSAttributedString(
                 string: title,
@@ -281,6 +296,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
                     .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
                 ]
             )
+            usageMenuItem.title = "\(formatBytes(usage.used)) used of \(formatBytes(usage.total)) (\(formatBytes(usage.free)) free)"
         } catch {
             button.attributedTitle = NSAttributedString(
                 string: "ERR",
@@ -289,25 +305,6 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
                     .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
                 ]
             )
-        }
-
-        updateUsageMenuItem()
-    }
-
-    private func updateUsageMenuItem() {
-        do {
-            let attributes = try FileManager.default.attributesOfFileSystem(forPath: "/")
-            guard
-                let total = (attributes[.systemSize] as? NSNumber)?.int64Value,
-                let free = (attributes[.systemFreeSize] as? NSNumber)?.int64Value,
-                total > 0
-            else {
-                throw NSError(domain: "DiskMonitor", code: 1)
-            }
-
-            let used = total - free
-            usageMenuItem.title = "\(formatBytes(used)) used of \(formatBytes(total)) (\(formatBytes(free)) free)"
-        } catch {
             usageMenuItem.title = "Usage unavailable"
         }
     }
@@ -319,19 +316,17 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         return formatter.string(fromByteCount: bytes)
     }
 
-    private func diskUsagePercent(forPath path: String) throws -> Int {
+    private func diskUsage(forPath path: String) throws -> DiskUsage {
         let attributes = try FileManager.default.attributesOfFileSystem(forPath: path)
         guard
-            let total = (attributes[.systemSize] as? NSNumber)?.doubleValue,
-            let free = (attributes[.systemFreeSize] as? NSNumber)?.doubleValue,
+            let total = (attributes[.systemSize] as? NSNumber)?.int64Value,
+            let free = (attributes[.systemFreeSize] as? NSNumber)?.int64Value,
             total > 0
         else {
             throw NSError(domain: "DiskMonitor", code: 1)
         }
 
-        let used = total - free
-        let percent = (used / total) * 100
-        return Int(percent.rounded())
+        return DiskUsage(total: total, free: free)
     }
 
     private func color(for percentUsed: Int) -> NSColor {
