@@ -334,7 +334,9 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
             return .systemRed
         }
         if percentUsed >= 80 {
-            return .systemYellow
+            // A darker amber that keeps a yellow character but stays legible
+            // against the default (light) menu bar, where `.systemYellow` washes out.
+            return NSColor(red: 0.72, green: 0.53, blue: 0.04, alpha: 1.0)
         }
         return .labelColor
     }
