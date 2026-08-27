@@ -323,11 +323,15 @@ final class FileSystemScanner {
 
             for entryURL in urls {
                 guard let values = try? entryURL.resourceValues(forKeys: resourceKeys) else { continue }
-                if values.isSymbolicLink == true { continue }
+                if values.isSymbolicLink == true {
+                    continue
+                }
 
                 let isDirectory = values.isDirectory == true
                 let isRegularFile = values.isRegularFile == true
-                if !isDirectory, !isRegularFile { continue }
+                if !isDirectory, !isRegularFile {
+                    continue
+                }
 
                 results.append(DirectoryEntry(url: entryURL, isDirectory: isDirectory, isRegularFile: isRegularFile))
             }
