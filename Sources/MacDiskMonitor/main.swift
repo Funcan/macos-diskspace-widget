@@ -221,7 +221,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.target = self
         statusItem.button?.action = #selector(handleStatusItemClick)
-        statusItem.button?.sendAction(on: [.rightMouseUp])
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         statusMenu = NSMenu()
         usageMenuItem = NSMenuItem(title: "Calculating…", action: nil, keyEquivalent: "")
@@ -239,6 +239,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleStatusItemClick() {
+        updateStatus()
         guard NSApp.currentEvent?.type == .rightMouseUp else { return }
         statusItem.menu = statusMenu
         statusItem.button?.performClick(nil)
