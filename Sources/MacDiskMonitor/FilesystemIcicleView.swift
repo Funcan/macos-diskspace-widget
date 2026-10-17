@@ -102,6 +102,7 @@ final class FilesystemIcicleView: NSView {
     private func recomputeLayout() {
         guard !bounds.isEmpty else {
             nodeRects = []
+            hoverIndex = nil
             return
         }
 
@@ -109,6 +110,13 @@ final class FilesystemIcicleView: NSView {
         let rowHeight = bounds.height / CGFloat(maxDepth)
         nodeRects = []
         layout(nodes: rootNodes, within: NSRect(x: 0, y: 0, width: bounds.width, height: rowHeight), depth: 1, rowHeight: rowHeight)
+
+        // nodeRects was rebuilt, so the old hoverIndex may be stale or out of range.
+        if hoverIndex != nil, let window {
+            hoverIndex = findDeepestRect(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        } else {
+            hoverIndex = nil
+        }
     }
 
     private func layout(nodes: [IcicleNode], within rowRect: NSRect, depth: Int, rowHeight: CGFloat) {

@@ -12,6 +12,9 @@ final class FileSystemScanner {
     var onProgress: ((ScanSnapshot) -> Void)?
     var onPaused: ((ScanSnapshot) -> Void)?
     var onCompleted: ((ScanSnapshot) -> Void)?
+    /// Folders scanned depth-first, in order, before the rest of the filesystem.
+    /// Read when a new scan starts; `~` is expanded.
+    var priorityPaths: [String] = []
 
     private let scanQueue = DispatchQueue(label: "MacDiskMonitor.AnalysisScan",
                                           qos: .utility)
@@ -29,6 +32,7 @@ final class FileSystemScanner {
     private var directoryStack: [ScanTask] = []
     private var canonicalDirectoryPathByID: [FileIdentity: String] = [:]
     private var visitedFileIDs: Set<FileIdentity> = []
+    private var priorityRootPaths: Set<String> = []
     private var scannedFiles: Int = 0
     private var scannedBytes: UInt64 = 0
     private var scanActiveStartDate: Date?
@@ -81,6 +85,9 @@ final class FileSystemScanner {
             visitedFileIDs = []
             scannedFiles = 0
             scannedBytes = 0
+            let priorityTasks = makePriorityTasks()
+            priorityRootPaths = Set(priorityTasks.map(\.url.path))
+            // The stack pops from the end, so priority tasks go on top of the root task, first path last.
             directoryStack = [
                 ScanTask(
                     kind: .scan,
@@ -89,7 +96,7 @@ final class FileSystemScanner {
                     representedNode: rootTreeNode,
                     depth: 0
                 ),
-            ]
+            ] + priorityTasks.reversed()
             resetScanTiming()
             markScanResumed()
             emitProgress(currentSnapshot())
@@ -128,6 +135,11 @@ final class FileSystemScanner {
     private func processTask(_ task: ScanTask) {
         if task.kind == .finalize {
             task.representedNode?.isFullyScanned = true
+            return
+        }
+
+        // Priority folders were already scanned up front; don't walk them again.
+        if !task.isPriorityRoot, priorityRootPaths.contains(task.url.path) {
             return
         }
 
@@ -204,6 +216,48 @@ final class FileSystemScanner {
                 )
             }
         }
+    }
+
+    private func makePriorityTasks() -> [ScanTask] {
+        var seen: Set<String> = []
+        var tasks: [ScanTask] = []
+
+        for rawPath in priorityPaths {
+            let expanded = (rawPath as NSString).expandingTildeInPath
+            // realpath resolves symlinks (e.g. /tmp -> /private/tmp) and fails for missing paths.
+            guard let resolved = realpath(expanded, nil) else { continue }
+            let path = String(cString: resolved)
+            free(resolved)
+
+            var isDirectory: ObjCBool = false
+            guard
+                path != "/",
+                FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                isDirectory.boolValue,
+                seen.insert(path).inserted
+            else {
+                continue
+            }
+
+            let components = path.split(separator: "/").map(String.init)
+            var node = rootTreeNode
+            for component in components.prefix(maxTrackedDepth) {
+                node = node.childNode(named: component)
+            }
+            let isTracked = components.count <= maxTrackedDepth
+
+            var task = ScanTask(
+                kind: .scan,
+                url: URL(fileURLWithPath: path, isDirectory: true),
+                targetNode: node,
+                representedNode: isTracked ? node : nil,
+                depth: components.count
+            )
+            task.isPriorityRoot = true
+            tasks.append(task)
+        }
+
+        return tasks
     }
 
     private func pruneDuplicateNode(_ node: MutableTreeNode?) {
@@ -702,6 +756,7 @@ private struct ScanTask {
     let targetNode: MutableTreeNode
     let representedNode: MutableTreeNode?
     let depth: Int
+    var isPriorityRoot = false
 }
 
 private final class MutableTreeNode {
