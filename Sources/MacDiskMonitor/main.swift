@@ -208,6 +208,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
     private var usageMenuItem: NSMenuItem!
     private var timer: Timer?
     private var analysisWindowController: NSWindowController?
+    private var preferencesWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -229,13 +230,36 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         statusMenu.addItem(usageMenuItem)
         statusMenu.addItem(NSMenuItem.separator())
         statusMenu.addItem(NSMenuItem(title: "Analyse", action: #selector(showAnalysisWindow), keyEquivalent: ""))
+        statusMenu.addItem(NSMenuItem(title: "Preferences…", action: #selector(showPreferencesWindow), keyEquivalent: ","))
         statusMenu.addItem(NSMenuItem.separator())
         statusMenu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
 
         updateStatus()
-        timer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
+        scheduleTimer()
+    }
+
+    private func scheduleTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: Preferences.refreshInterval, repeats: true) { [weak self] _ in
             self?.updateStatus()
         }
+    }
+
+    @objc private func showPreferencesWindow() {
+        if preferencesWindowController == nil {
+            let contentViewController = PreferencesViewController()
+            contentViewController.onChange = { [weak self] in
+                self?.scheduleTimer()
+            }
+            let window = NSWindow(contentViewController: contentViewController)
+            window.styleMask = [.titled, .closable]
+            window.title = "Preferences"
+            window.center()
+            preferencesWindowController = NSWindowController(window: window)
+        }
+
+        preferencesWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func handleStatusItemClick() {
