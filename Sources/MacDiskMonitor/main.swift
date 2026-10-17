@@ -89,6 +89,7 @@ final class AnalysisViewController: NSViewController {
             return
         }
 
+        scanner.priorityPaths = Preferences.priorityScanPaths
         scanner.startOrResume()
         scanPhase = .running
         let snapshot = scanner.currentSnapshot()
