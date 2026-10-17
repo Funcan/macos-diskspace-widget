@@ -211,6 +211,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_: Notification) {
+        Preferences.registerDefaults()
         NSApp.setActivationPolicy(.accessory)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -249,6 +250,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         if preferencesWindowController == nil {
             let contentViewController = PreferencesViewController()
             contentViewController.onChange = { [weak self] in
+                self?.updateStatus()
                 self?.scheduleTimer()
             }
             let window = NSWindow(contentViewController: contentViewController)
@@ -354,10 +356,10 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
     }
 
     private func color(for percentUsed: Int) -> NSColor {
-        if percentUsed >= 90 {
+        if percentUsed >= Preferences.errorPercent {
             return .systemRed
         }
-        if percentUsed >= 80 {
+        if percentUsed >= Preferences.warningPercent {
             // A darker amber that keeps a yellow character but stays legible
             // against the default (light) menu bar, where `.systemYellow` washes out.
             return NSColor(red: 0.72, green: 0.53, blue: 0.04, alpha: 1.0)
