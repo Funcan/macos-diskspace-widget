@@ -18,11 +18,11 @@ Start At Login (LaunchAgent)
 Install and start:
 
 ```sh
-./scripts/install-launchagent.sh
+make install
 ```
 
 Uninstall:
 
 ```sh
-./scripts/uninstall-launchagent.sh
+make uninstall
 ```
