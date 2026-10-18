@@ -10,11 +10,11 @@ permissions:
 
 jobs:
   build-and-release:
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate tag format
         shell: bash
@@ -58,7 +58,7 @@ jobs:
           chmod +x dist/MacDiskMonitor-darwin-arm64 dist/MacDiskMonitor-darwin-amd64 dist/MacDiskMonitor-darwin-universal
 
       - name: Publish GitHub release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/MacDiskMonitor-darwin-amd64
