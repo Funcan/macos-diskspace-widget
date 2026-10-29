@@ -105,6 +105,7 @@ final class PreferencesViewController: NSViewController, NSTableViewDataSource, 
         pathsLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let resetButton = NSButton(title: "Reset to Defaults", target: self, action: #selector(resetToDefaults))
+        let restartButton = NSButton(title: "Restart", target: self, action: #selector(restart))
 
         let grid = NSGridView(views: [
             [NSTextField(labelWithString: "Refresh every:"), refreshPopUp],
@@ -117,6 +118,7 @@ final class PreferencesViewController: NSViewController, NSTableViewDataSource, 
         grid.translatesAutoresizingMaskIntoConstraints = false
 
         resetButton.translatesAutoresizingMaskIntoConstraints = false
+        restartButton.translatesAutoresizingMaskIntoConstraints = false
 
         view = NSView()
         view.addSubview(grid)
@@ -124,6 +126,7 @@ final class PreferencesViewController: NSViewController, NSTableViewDataSource, 
         view.addSubview(pathsScrollView)
         view.addSubview(pathsButtons)
         view.addSubview(resetButton)
+        view.addSubview(restartButton)
 
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
@@ -144,6 +147,9 @@ final class PreferencesViewController: NSViewController, NSTableViewDataSource, 
             resetButton.topAnchor.constraint(equalTo: pathsButtons.bottomAnchor, constant: 20),
             resetButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             resetButton.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
+
+            restartButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            restartButton.centerYAnchor.constraint(equalTo: resetButton.centerYAnchor),
             view.widthAnchor.constraint(greaterThanOrEqualToConstant: 440),
         ])
 
@@ -293,5 +299,35 @@ final class PreferencesViewController: NSViewController, NSTableViewDataSource, 
         Preferences.resetToDefaults()
         loadValues()
         onChange?()
+    }
+
+    /// Relaunches the current executable so a freshly installed binary or newly
+    /// granted Full Disk Access takes effect. The helper shell waits for this
+    /// process to exit before exec'ing, and runs in its own session (SETSID) so
+    /// launchd doesn't kill it along with our process group when we terminate.
+    @objc private func restart() {
+        guard let executablePath = Bundle.main.executablePath else { return }
+
+        let args = ["/bin/sh", "-c", "sleep 1; exec \"$0\"", executablePath]
+        let argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        defer { posix_spawnattr_destroy(&attr) }
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
+
+        var pid: pid_t = 0
+        let result = posix_spawn(&pid, "/bin/sh", nil, &attr, argv, environ)
+        guard result == 0 else {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Restart Failed"
+            alert.informativeText = String(cString: strerror(result))
+            alert.runModal()
+            return
+        }
+
+        NSApp.terminate(nil)
     }
 }
