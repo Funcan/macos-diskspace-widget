@@ -26,7 +26,7 @@ Versioning
 ----------
 
 The version comes from git tags (`git describe --tags --dirty`) and is shown,
-along with the commit hash and whether the working tree was dirty, under
+along with the commit hash (and a note if the working tree was dirty), under
 About in the menu. It's embedded into the binary by `scripts/build.sh`
 (used by `make build`, `make install` and CI); a plain `swift build` or
 `swift run` shows "unknown".

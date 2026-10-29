@@ -272,15 +272,12 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
         let commit = info["GitCommit"] as? String ?? "unknown"
-        let treeState = switch info["GitDirty"] as? Bool {
-        case true: "dirty"
-        case false: "clean"
-        default: "unknown"
-        }
 
-        let credits = "Author: Duncan Thomas <duncan.thomas@gmail.com>\n" +
-            "Commit: \(commit)\n" +
-            "Working tree: \(treeState)"
+        var credits = "Author: Duncan Thomas <duncan.thomas@gmail.com>\n" +
+            "Commit: \(commit)"
+        if info["GitDirty"] as? Bool == true {
+            credits += "\nWorking tree: dirty"
+        }
 
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
