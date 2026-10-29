@@ -13,8 +13,6 @@ mkdir -p "$HOME/Library/LaunchAgents"
 
 cd "$ROOT_DIR"
 ./scripts/build.sh -c release
-cp ".build/release/$APP_NAME" "$BIN_PATH"
-chmod +x "$BIN_PATH"
 
 cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,6 +36,17 @@ EOF
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
   launchctl bootout "gui/$(id -u)" "$PLIST_PATH" || true
 fi
+
+# Copies started by the Preferences Restart button aren't managed by launchd,
+# so bootout doesn't stop them.
+pkill -f "^$BIN_PATH\$" || true
+
+# Remove rather than overwrite: writing over a binary that's (or was very
+# recently) running leaves the kernel with a stale code signature, and the new
+# binary gets SIGKILLed on launch.
+rm -f "$BIN_PATH"
+cp ".build/release/$APP_NAME" "$BIN_PATH"
+chmod +x "$BIN_PATH"
 
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
 launchctl enable "gui/$(id -u)/$LABEL"
