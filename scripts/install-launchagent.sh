@@ -12,7 +12,7 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$HOME/Library/LaunchAgents"
 
 cd "$ROOT_DIR"
-swift build -c release
+./scripts/build.sh -c release
 cp ".build/release/$APP_NAME" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 

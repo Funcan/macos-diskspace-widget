@@ -15,6 +15,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Full history and tags so git describe can find the version.
+          fetch-depth: 0
 
       - name: Validate tag format
         shell: bash
@@ -28,7 +31,7 @@ jobs:
       - name: Build arm64 binary
         shell: bash
         run: |
-          swift build -c release --arch arm64
+          ./scripts/build.sh -c release --arch arm64
           ARM64_BIN="$(find .build -type f -path '*/release/MacDiskMonitor' | grep 'arm64-apple-macosx' | head -n 1)"
           if [[ -z "${ARM64_BIN}" ]]; then
             echo "arm64 binary not found"
@@ -40,7 +43,7 @@ jobs:
       - name: Build amd64 binary
         shell: bash
         run: |
-          swift build -c release --arch x86_64
+          ./scripts/build.sh -c release --arch x86_64
           AMD64_BIN="$(find .build -type f -path '*/release/MacDiskMonitor' | grep 'x86_64-apple-macosx' | head -n 1)"
           if [[ -z "${AMD64_BIN}" ]]; then
             echo "amd64 binary not found"

@@ -10,6 +10,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Full history and tags so git describe can find the version.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -35,4 +38,4 @@ jobs:
           fi
 
       - name: Build
-        run: swift build
+        run: ./scripts/build.sh

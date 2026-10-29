@@ -232,6 +232,7 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
         statusMenu.addItem(usageMenuItem)
         statusMenu.addItem(NSMenuItem.separator())
         statusMenu.addItem(NSMenuItem(title: "Analyse", action: #selector(showAnalysisWindow), keyEquivalent: ""))
+        statusMenu.addItem(NSMenuItem(title: "About", action: #selector(showAboutPanel), keyEquivalent: ""))
         statusMenu.addItem(NSMenuItem(title: "Preferences…", action: #selector(showPreferencesWindow), keyEquivalent: ","))
         statusMenu.addItem(NSMenuItem.separator())
         statusMenu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
@@ -263,6 +264,34 @@ final class DiskMonitorApp: NSObject, NSApplicationDelegate {
 
         preferencesWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Version info is embedded into the binary's Info.plist by scripts/build.sh;
+    /// a plain `swift build` won't have it.
+    @objc private func showAboutPanel() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
+        let commit = info["GitCommit"] as? String ?? "unknown"
+        let treeState = switch info["GitDirty"] as? Bool {
+        case true: "dirty"
+        case false: "clean"
+        default: "unknown"
+        }
+
+        let credits = "Author: Duncan Thomas <duncan.thomas@gmail.com>\n" +
+            "Commit: \(commit)\n" +
+            "Working tree: \(treeState)"
+
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "MacDiskMonitor",
+            .applicationVersion: version,
+            .version: "",
+            .credits: NSAttributedString(
+                string: credits,
+                attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)]
+            ),
+        ])
     }
 
     @objc private func handleStatusItemClick() {

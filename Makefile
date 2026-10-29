@@ -1,7 +1,7 @@
 .PHONY: build format test install uninstall clean
 
 build:
-	swift build
+	./scripts/build.sh
 
 format:
 	swiftformat .
